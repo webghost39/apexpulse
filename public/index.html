@@ -316,11 +316,34 @@ function renderLeaderboard(players) {
 
 function logAudit(msg) { const logBox = $('audit-log'); logBox.innerHTML += `<br>${msg}`; logBox.scrollTop = logBox.scrollHeight; }
 
+function copyOk() {
+    $('copy-link').className = 'fa-solid fa-check';
+    setTimeout(() => { $('copy-link').className = 'fa-solid fa-copy'; }, 1200);
+}
+function legacyCopy(text) {
+    // fallback for non-secure contexts (plain http://IP) where navigator.clipboard is undefined
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.setAttribute('readonly', '');
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+}
 $('copy-link').addEventListener('click', () => {
-    if (navigator.clipboard) navigator.clipboard.writeText(window.location.href).then(() => {
-        $('copy-link').className = 'fa-solid fa-check';
-        setTimeout(() => { $('copy-link').className = 'fa-solid fa-copy'; }, 1200);
-    });
+    const url = window.location.href;
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(url).then(copyOk).catch(() => { if (!legacyCopy(url)) prompt('复制此链接 / Copy this link:', url); });
+    } else if (legacyCopy(url)) {
+        copyOk();
+    } else {
+        prompt('复制此链接 / Copy this link:', url);
+    }
 });
 
 window.onload = initConnection;
