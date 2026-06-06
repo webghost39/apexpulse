@@ -82,6 +82,21 @@
                 <div class="game-overlay" id="overlay">
                     <h2 id="overlay-title" style="font-size:26px; letter-spacing:1px; font-weight:800;">CONNECTING...</h2>
                     <p id="overlay-desc" style="color:#777; font-size:13px; max-width:90%; line-height:1.6;">Joining room.</p>
+                    <div id="team-controls" style="display:none; margin: 14px 0;">
+                        <label id="team-mode-row" style="display:none; align-items:center; gap:8px; justify-content:center; margin-bottom:12px; cursor:pointer; color:#cfd3dc; font-size:13px;">
+                            <input type="checkbox" id="team-mode-toggle"> TEAM MODE
+                        </label>
+                        <div id="team-picker" style="display:none; gap:10px; justify-content:center;">
+                            <button class="btn-action" id="pick-a" style="background:#2d7dff; padding:10px 22px;">TEAM A</button>
+                            <button class="btn-action" id="pick-b" style="background:#ff5c5c; padding:10px 22px;">TEAM B</button>
+                        </div>
+                    </div>
+                    <canvas id="wheelCanvas" width="320" height="320" style="display:none; margin:12px auto;"></canvas>
+                    <div id="result-banner" style="display:none; font-size:22px; font-weight:800; margin:10px 0;"></div>
+                    <div id="wheel-controls" style="display:none; gap:10px; justify-content:center; margin-top:10px;">
+                        <button class="btn-action" id="spin-btn">🎡 SPIN WHEEL</button>
+                        <button class="btn-action" id="decide-btn" style="background:#555;">DECIDE BY SCORE</button>
+                    </div>
                     <button class="btn-action" id="action-btn" disabled>PLEASE WAIT</button>
                 </div>
                 <canvas id="aimCanvas" width="800" height="500"></canvas>
@@ -107,6 +122,7 @@ let myName = "", myId = null, hostId = null;
 let currentScore = 0, timeLeft = 30, gameSeed = 0;
 let playerDuration = 30, windowEndLocal = 0;
 let isPlaying = false, myStatus = 'waiting';
+let teamMode = false, myTeam = null;
 let gameInterval = null, windowInterval = null;
 let target = { x: 0, y: 0, r: 25 };
 let antiCheatStream = [];
@@ -120,6 +136,8 @@ function initConnection() {
         socket.emit('join_room', { roomId, playerName: myName });
     });
     socket.on('room_state', (s) => { hostId = s.hostId; if (myStatus === 'waiting') updateLobbyOverlay(); });
+    socket.on('room_config', (c) => { teamMode = c.teamMode; if (myStatus === 'waiting') updateLobbyOverlay(); });
+    socket.on('lock_denied', (d) => { alert(d.reason); });
     socket.on('host_changed', (s) => { hostId = s.hostId; if (myStatus === 'waiting') updateLobbyOverlay(); });
     socket.on('room_update', (players) => renderLeaderboard(players));
     socket.on('join_denied', (d) => {
@@ -133,7 +151,9 @@ function initConnection() {
         windowEndLocal = Date.now() + cfg.window * 1000; // skew-free local deadline
         openWindowReady();
     });
-    socket.on('match_over', (players) => showResults(players));
+    socket.on('match_over', (data) => showResults(data));
+    socket.on('wheel_result', (r) => animateWheel(r));
+    socket.on('team_result', (r) => showTeamWinner(r.winner));
     socket.on('room_reset', () => resetToLobby());
 }
 
@@ -156,9 +176,25 @@ function updateLobbyOverlay() {
         btn.disabled = true;
         btn.onclick = null;
     }
+    renderTeamControls();
 }
 
 function requestLockStart() { if (socket && socket.connected) socket.emit('lock_start', { roomId }); }
+
+function setTeamMode(on) { if (socket && socket.connected) socket.emit('set_team_mode', { roomId, enabled: on }); }
+function pickTeam(t) { myTeam = t; if (socket && socket.connected) socket.emit('select_team', { roomId, team: t }); renderTeamControls(); }
+
+function renderTeamControls() {
+    const wrap = $('team-controls'), modeRow = $('team-mode-row'), picker = $('team-picker');
+    const inLobby = (myStatus === 'waiting');
+    wrap.style.display = inLobby ? 'block' : 'none';
+    if (!inLobby) return;
+    modeRow.style.display = amHost() ? 'flex' : 'none';
+    $('team-mode-toggle').checked = teamMode;
+    picker.style.display = teamMode ? 'flex' : 'none';
+    $('pick-a').style.outline = myTeam === 'A' ? '3px solid #fff' : 'none';
+    $('pick-b').style.outline = myTeam === 'B' ? '3px solid #fff' : 'none';
+}
 function requestReset() { if (socket && socket.connected) socket.emit('reset_room', { roomId }); }
 
 function windowRemaining() { return Math.max(0, Math.ceil((windowEndLocal - Date.now()) / 1000)); }
@@ -168,6 +204,7 @@ function stopWindowTimer() { if (windowInterval) { clearInterval(windowInterval)
 // After host locks: 60s window is open, each player starts their own 30s run when ready.
 function openWindowReady() {
     myStatus = 'ready';
+    $('team-controls').style.display = 'none';
     const ov = $('overlay'), title = $('overlay-title'), desc = $('overlay-desc'), btn = $('action-btn');
     ov.style.display = 'flex';
     btn.style.display = 'inline-block';
@@ -287,13 +324,19 @@ function finishMyRun() {
     logAudit(`[SUBMIT] Score submitted: ${currentScore}`);
 }
 
-function showResults(players) {
+function showResults(data) {
+    const players = Array.isArray(data) ? data : data.players;
+    const isTeam = !Array.isArray(data) && data.teamMode;
     isPlaying = false;
     stopWindowTimer();
     if (gameInterval) { clearInterval(gameInterval); gameInterval = null; }
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     $('finish-btn').style.display = 'none';
     renderLeaderboard(players);
+    if (isTeam) {
+        showTeamSettlement(data.teams, data.outcome);
+        return;
+    }
     const sorted = [...players].sort((a, b) => b.score - a.score);
     const me = sorted.find(p => p.id === myId);
     const rank = me ? sorted.indexOf(me) + 1 : '-';
@@ -308,6 +351,78 @@ function showResults(players) {
     $('overlay').style.display = 'flex';
 }
 
+function showTeamSettlement(teams, outcome) {
+    $('overlay').style.display = 'flex';
+    $('overlay-title').innerText = 'MATCH OVER';
+    $('team-controls').style.display = 'none';
+    $('wheelCanvas').style.display = 'none';
+    // host keeps PLAY AGAIN; others wait for host (same as the non-team results)
+    const btn = $('action-btn');
+    btn.style.display = 'inline-block';
+    if (amHost()) { btn.disabled = false; btn.innerText = 'PLAY AGAIN'; btn.onclick = requestReset; }
+    else { btn.disabled = true; btn.innerText = 'WAITING FOR HOST...'; btn.onclick = null; }
+
+    const banner = $('result-banner'), wc = $('wheel-controls');
+    banner.style.display = 'block';
+    wc.style.display = 'none';
+    $('overlay-desc').innerText = `TEAM A: ${teams.A.total}  ·  TEAM B: ${teams.B.total}`;
+
+    if (outcome.type === 'TEAM_WIN') { banner.innerText = `TEAM ${outcome.winner} WINS`; banner.style.color = outcome.winner === 'A' ? '#2d7dff' : '#ff5c5c'; }
+    else if (outcome.type === 'DRAW') { banner.innerText = 'DRAW'; banner.style.color = '#cfd3dc'; }
+    else { // WHEEL_ELIGIBLE
+        banner.innerText = 'TIE-BREAK NEEDED';
+        banner.style.color = '#ffce4f';
+        if (amHost()) {
+            wc.style.display = 'flex';
+            $('decide-btn').style.display = (outcome.mode === 'fifty') ? 'none' : 'inline-block';
+        } else {
+            $('overlay-desc').innerText += '  ·  Waiting for host to break the tie...';
+        }
+    }
+}
+
+function showTeamWinner(winner) {
+    const banner = $('result-banner');
+    $('wheel-controls').style.display = 'none';
+    banner.style.display = 'block';
+    if (!winner) { banner.innerText = 'DRAW'; banner.style.color = '#cfd3dc'; }
+    else { banner.innerText = `TEAM ${winner} WINS`; banner.style.color = winner === 'A' ? '#2d7dff' : '#ff5c5c'; }
+}
+
+// Draw a 2-arc wheel rotated by `rotationDeg`. Pointer is fixed at the top (12 o'clock).
+function drawWheel(sliceA, rotationDeg) {
+    const c = $('wheelCanvas'), x = c.getContext('2d');
+    const cx = c.width / 2, cy = c.height / 2, r = Math.min(cx, cy) - 8;
+    x.clearRect(0, 0, c.width, c.height);
+    const rot = rotationDeg * Math.PI / 180;
+    const start = -Math.PI / 2 + rot;
+    const aEnd = start + sliceA * 2 * Math.PI;
+    const fullEnd = start + 2 * Math.PI;
+    x.beginPath(); x.moveTo(cx, cy); x.arc(cx, cy, r, start, aEnd); x.closePath(); x.fillStyle = '#2d7dff'; x.fill();
+    x.beginPath(); x.moveTo(cx, cy); x.arc(cx, cy, r, aEnd, fullEnd); x.closePath(); x.fillStyle = '#ff5c5c'; x.fill();
+    x.beginPath(); x.moveTo(cx, 2); x.lineTo(cx - 10, 18); x.lineTo(cx + 10, 18); x.closePath(); x.fillStyle = '#fff'; x.fill();
+}
+
+function animateWheel(r) {
+    $('wheel-controls').style.display = 'none';
+    $('result-banner').innerText = 'SPINNING...';
+    $('result-banner').style.color = '#ffce4f';
+    const c = $('wheelCanvas'); c.style.display = 'block';
+    const spins = 5;
+    const final = spins * 360 - r.landAngle;
+    const duration = 5000;
+    const t0 = performance.now();
+    const ease = (p) => 1 - Math.pow(1 - p, 3);
+    function frame(now) {
+        const p = Math.min(1, (now - t0) / duration);
+        const rot = ease(p) * final;
+        drawWheel(r.sliceA, rot);
+        if (p < 1) requestAnimationFrame(frame);
+        else showTeamWinner(r.winner);
+    }
+    requestAnimationFrame(frame);
+}
+
 function resetToLobby() {
     isPlaying = false; myStatus = 'waiting';
     currentScore = 0; timeLeft = playerDuration;
@@ -317,6 +432,9 @@ function resetToLobby() {
     $('timer-hud').innerText = playerDuration + "s";
     $('finish-btn').style.display = 'none';
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    $('wheelCanvas').style.display = 'none';
+    $('result-banner').style.display = 'none';
+    $('wheel-controls').style.display = 'none';
     updateLobbyOverlay();
     logAudit(`[SYSTEM] Host reset the room. Waiting for the next match...`);
 }
@@ -324,6 +442,27 @@ function resetToLobby() {
 function renderLeaderboard(players) {
     const listEl = $('leaderboard');
     listEl.innerHTML = "";
+    if (teamMode) {
+        const totals = { A: 0, B: 0 };
+        const groups = { A: [], B: [] };
+        players.forEach(p => { if (p.team === 'A' || p.team === 'B') { groups[p.team].push(p); totals[p.team] += (p.isCheater ? 0 : p.score); } });
+        [['A', '#2d7dff'], ['B', '#ff5c5c']].forEach(([t, color]) => {
+            const head = document.createElement('li');
+            head.style.cssText = `list-style:none; font-weight:800; margin:10px 0 6px; color:${color};`;
+            head.innerText = `TEAM ${t} — ${totals[t]}`;
+            listEl.appendChild(head);
+            groups[t].sort((a, b) => b.score - a.score).forEach(p => {
+                const hostTag = p.id === hostId ? ' 👑' : '';
+                const youTag = p.id === myId ? ' (YOU)' : '';
+                const row = document.createElement('li');
+                row.className = 'player-item';
+                row.style.borderLeftColor = color;
+                row.innerHTML = `<div class="player-info"><span class="player-name">${p.name}${hostTag}${youTag}</span></div><div class="player-score">${p.isCheater ? '<span class="cheater-tag"><i class="fa-solid fa-skull-crossbones"></i> BANNED</span>' : p.score}</div>`;
+                listEl.appendChild(row);
+            });
+        });
+        return;
+    }
     const sorted = [...players].sort((a, b) => b.score - a.score);
     if (sorted.length === 0) { listEl.innerHTML = '<li style="color:#555; text-align:center; margin-top:20px; font-size:14px;">Waiting for players...</li>'; return; }
     sorted.forEach((p, index) => {
@@ -369,6 +508,12 @@ $('copy-link').addEventListener('click', () => {
         prompt('复制此链接 / Copy this link:', url);
     }
 });
+
+$('team-mode-toggle').addEventListener('change', (e) => setTeamMode(e.target.checked));
+$('pick-a').addEventListener('click', () => pickTeam('A'));
+$('pick-b').addEventListener('click', () => pickTeam('B'));
+$('spin-btn').addEventListener('click', () => { if (socket && socket.connected) socket.emit('spin_wheel', { roomId }); });
+$('decide-btn').addEventListener('click', () => { if (socket && socket.connected) socket.emit('decide_by_score', { roomId }); });
 
 window.onload = initConnection;
 </script>
