@@ -74,7 +74,7 @@ io.on('connection', (socket) => {
         }
         socket.join(roomId);
         if (!rooms[roomId]) {
-            rooms[roomId] = { players: {}, host: socket.id, locked: false, status: 'lobby', seed: 0, startAt: 0, timer: null, createdAt: Date.now(), teamMode: false, wheelSpun: false, outcome: null };
+            rooms[roomId] = { players: {}, host: socket.id, locked: false, status: 'lobby', seed: 0, startAt: 0, timer: null, createdAt: Date.now(), teamMode: false, wheelSpun: false, outcome: null, teamNames: { A: 'A', B: 'B' } };
         }
         const room = rooms[roomId];
         room.players[socket.id] = {
@@ -86,7 +86,7 @@ io.on('connection', (socket) => {
             team: null
         };
         socket.emit('room_state', { hostId: room.host, status: room.status });
-        socket.emit('room_config', { teamMode: room.teamMode });
+        socket.emit('room_config', { teamMode: room.teamMode, teamNames: room.teamNames });
         io.to(roomId).emit('room_update', leaderboardOf(room));
     });
 
@@ -96,8 +96,20 @@ io.on('connection', (socket) => {
         if (!room || room.host !== socket.id || room.status !== 'lobby') return;
         room.teamMode = !!enabled;
         Object.values(room.players).forEach(p => { p.team = null; });
-        io.to(roomId).emit('room_config', { teamMode: room.teamMode });
+        io.to(roomId).emit('room_config', { teamMode: room.teamMode, teamNames: room.teamNames });
         io.to(roomId).emit('room_update', leaderboardOf(room));
+    });
+
+    // Host renames the teams (lobby only). Empty / blank falls back to A / B.
+    socket.on('set_team_names', ({ roomId, names }) => {
+        const room = rooms[roomId];
+        if (!room || room.host !== socket.id || room.status !== 'lobby') return;
+        const clean = (v, fallback) => {
+            const s = (typeof v === 'string' ? v : '').trim().slice(0, 14);
+            return s.length ? s : fallback;
+        };
+        room.teamNames = { A: clean(names && names.A, 'A'), B: clean(names && names.B, 'B') };
+        io.to(roomId).emit('room_config', { teamMode: room.teamMode, teamNames: room.teamNames });
     });
 
     // Any player picks a team while in team mode (lobby only).
