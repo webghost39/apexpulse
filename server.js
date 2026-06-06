@@ -206,7 +206,7 @@ io.on('connection', (socket) => {
         } else {
             player.score = 0;
             player.isCheater = true;
-            console.log(`[ALERT] Telemetry fraud caught! Player ${player.name} banned. Reason: ${auditResult.reason}`);
+            console.log(`[ALERT] Player ${player.name} banned. Reason: ${auditResult.reason} | ${JSON.stringify(auditResult.stats || auditResult)}`);
         }
         player.status = 'finished';
         io.to(roomId).emit('room_update', leaderboardOf(room));
@@ -318,7 +318,7 @@ function auditPlayerBehavior(stream, seed, claimedScore) {
         const a = stream[i];
         // Replay must land on the same target the client recorded, else the stream is fabricated.
         if (Math.round(target.x) !== a.target_x || Math.round(target.y) !== a.target_y) {
-            return { passed: false, reason: "STREAM_TARGET_MISMATCH" };
+            return { passed: false, reason: "STREAM_TARGET_MISMATCH", at: i, sawTarget: [a.target_x, a.target_y], expectTarget: [Math.round(target.x), Math.round(target.y)] };
         }
         const dist = Math.hypot(a.x - target.x, a.y - target.y);
         score = Math.max(0, score + ringScore(dist, target.r));
@@ -330,10 +330,11 @@ function auditPlayerBehavior(stream, seed, claimedScore) {
         // inhuman cadence: clicks closer than AC.FAST_MS apart
         if (i > 0 && (a.t - stream[i - 1].t) < AC.FAST_MS) extremeFastCount++;
     }
-    if (extremeFastCount > AC.FAST_MAX) return { passed: false, reason: "MACRO_AUTOCLICKER_DETECTED" };
+    const stats = { hits, pixelPerfect, extremeFastCount, clicks: stream.length };
+    if (extremeFastCount > AC.FAST_MAX) return { passed: false, reason: "MACRO_AUTOCLICKER_DETECTED", stats };
     // aimbot: needs a meaningful sample AND overwhelmingly pixel-perfect hits
-    if (hits >= AC.AIMBOT_MIN_HITS && (pixelPerfect / hits) > AC.AIMBOT_RATIO) return { passed: false, reason: "AIBOT_LOCKON_DETECTED" };
-    return { passed: true, score };
+    if (hits >= AC.AIMBOT_MIN_HITS && (pixelPerfect / hits) > AC.AIMBOT_RATIO) return { passed: false, reason: "AIBOT_LOCKON_DETECTED", stats };
+    return { passed: true, score, stats };
 }
 
 const PORT = process.env.PORT || 3000;
@@ -341,5 +342,7 @@ server.listen(PORT, () => {
     console.log(`====================================================`);
     console.log(`  APEXPULSE CORE SERVER IS RUNNING ON PORT: ${PORT}`);
     console.log(`  Local Domain: http://localhost:${PORT}`);
+    console.log(`  Build: team-mode+wheel, anti-cheat v2 (pixel-perfect)`);
+    console.log(`  Anti-cheat thresholds: ${JSON.stringify(AC)}`);
     console.log(`====================================================`);
 });
