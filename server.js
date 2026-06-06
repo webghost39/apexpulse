@@ -17,6 +17,15 @@ const MATCH_WINDOW = Number(process.env.MATCH_WINDOW) || 60;     // global deadl
 const PLAYER_DURATION = Number(process.env.PLAYER_DURATION) || 30; // each player's own run length (s)
 const GRACE = 3;           // extra seconds before server force-ends the window
 
+// Anti-cheat thresholds (override via env to tune sensitivity)
+const AC = {
+    PERFECT_PX:   Number(process.env.AC_PERFECT_PX)   || 1.2,  // <= this px from center counts as pixel-perfect
+    AIMBOT_RATIO: Number(process.env.AC_AIMBOT_RATIO) || 0.8,  // ban if pixelPerfect/hits exceeds this
+    AIMBOT_MIN_HITS: Number(process.env.AC_AIMBOT_MIN_HITS) || 8, // ...with at least this many hits
+    FAST_MS:      Number(process.env.AC_FAST_MS)      || 45,   // clicks closer than this (ms) are "extreme fast"
+    FAST_MAX:     Number(process.env.AC_FAST_MAX)     || 8,    // ban if more than this many extreme-fast intervals
+};
+
 // Real-time In-memory Database Room Registry
 const rooms = {};
 
@@ -317,13 +326,13 @@ function auditPlayerBehavior(stream, seed, claimedScore) {
         // pixel-perfect = sub-pixel dead-center hit. Humans aiming for center still scatter a few px;
         // only an aimbot snaps to ~0 offset on hit after hit. (Ring scoring rewards center, so a
         // simple "near center" ratio would false-flag good players — require true pixel precision.)
-        if (isHit) { hits++; if (dist <= 1.2) pixelPerfect++; target = spawnTarget(rng); }
-        // inhuman cadence: < 45ms between clicks (> 22 clicks/s sustained)
-        if (i > 0 && (a.t - stream[i - 1].t) < 45) extremeFastCount++;
+        if (isHit) { hits++; if (dist <= AC.PERFECT_PX) pixelPerfect++; target = spawnTarget(rng); }
+        // inhuman cadence: clicks closer than AC.FAST_MS apart
+        if (i > 0 && (a.t - stream[i - 1].t) < AC.FAST_MS) extremeFastCount++;
     }
-    if (extremeFastCount > 8) return { passed: false, reason: "MACRO_AUTOCLICKER_DETECTED" };
+    if (extremeFastCount > AC.FAST_MAX) return { passed: false, reason: "MACRO_AUTOCLICKER_DETECTED" };
     // aimbot: needs a meaningful sample AND overwhelmingly pixel-perfect hits
-    if (hits >= 8 && (pixelPerfect / hits) > 0.8) return { passed: false, reason: "AIBOT_LOCKON_DETECTED" };
+    if (hits >= AC.AIMBOT_MIN_HITS && (pixelPerfect / hits) > AC.AIMBOT_RATIO) return { passed: false, reason: "AIBOT_LOCKON_DETECTED" };
     return { passed: true, score };
 }
 
