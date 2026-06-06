@@ -304,7 +304,7 @@ function auditPlayerBehavior(stream, seed, claimedScore) {
     if (!stream || stream.length === 0) return { passed: true, score: 0 }; // never clicked -> 0, not a cheater
     const rng = makeRng(seed);
     let target = spawnTarget(rng); // matches client: one spawn before first click
-    let score = 0, hits = 0, bullseye = 0, extremeFastCount = 0;
+    let score = 0, hits = 0, pixelPerfect = 0, extremeFastCount = 0;
     for (let i = 0; i < stream.length; i++) {
         const a = stream[i];
         // Replay must land on the same target the client recorded, else the stream is fabricated.
@@ -314,11 +314,16 @@ function auditPlayerBehavior(stream, seed, claimedScore) {
         const dist = Math.hypot(a.x - target.x, a.y - target.y);
         score = Math.max(0, score + ringScore(dist, target.r));
         const isHit = dist <= target.r;
-        if (isHit) { hits++; if (dist / target.r <= 0.15) bullseye++; target = spawnTarget(rng); }
-        if (i > 0 && (a.t - stream[i - 1].t) < 80) extremeFastCount++;
+        // pixel-perfect = sub-pixel dead-center hit. Humans aiming for center still scatter a few px;
+        // only an aimbot snaps to ~0 offset on hit after hit. (Ring scoring rewards center, so a
+        // simple "near center" ratio would false-flag good players — require true pixel precision.)
+        if (isHit) { hits++; if (dist <= 1.2) pixelPerfect++; target = spawnTarget(rng); }
+        // inhuman cadence: < 45ms between clicks (> 22 clicks/s sustained)
+        if (i > 0 && (a.t - stream[i - 1].t) < 45) extremeFastCount++;
     }
-    if (extremeFastCount > 3) return { passed: false, reason: "MACRO_AUTOCLICKER_DETECTED" };
-    if (hits > 0 && (bullseye / hits) > 0.5) return { passed: false, reason: "AIBOT_LOCKON_DETECTED" };
+    if (extremeFastCount > 8) return { passed: false, reason: "MACRO_AUTOCLICKER_DETECTED" };
+    // aimbot: needs a meaningful sample AND overwhelmingly pixel-perfect hits
+    if (hits >= 8 && (pixelPerfect / hits) > 0.8) return { passed: false, reason: "AIBOT_LOCKON_DETECTED" };
     return { passed: true, score };
 }
 
