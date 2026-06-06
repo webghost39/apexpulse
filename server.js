@@ -124,7 +124,11 @@ io.on('connection', (socket) => {
         const auditResult = auditPlayerBehavior(verifyStream, room.seed, finalScore);
 
         if (auditResult.passed) {
-            player.score = finalScore;
+            // server-authoritative: trust the replayed score, not the client's claim
+            player.score = auditResult.score;
+            if (Math.abs(auditResult.score - finalScore) > 0) {
+                console.log(`[WARN] Score mismatch for ${player.name}: claimed ${finalScore}, server ${auditResult.score}. Using server value.`);
+            }
         } else {
             player.score = 0;
             player.isCheater = true;
@@ -176,19 +180,51 @@ io.on('connection', (socket) => {
     });
 });
 
-// Telemetry Heuristics Anti-Cheat Analytics
+// Authoritative replay verification + heuristics.
+// Canvas dims and scoring MUST match the client (public/index.html).
+const CANVAS_W = 800, CANVAS_H = 500;
+const RINGS = [
+    { t: 0.2, pts: 100 },
+    { t: 0.4, pts: 80 },
+    { t: 0.6, pts: 60 },
+    { t: 0.8, pts: 40 },
+    { t: 1.0, pts: 20 },
+];
+const MISS_PTS = -20;
+function ringScore(dist, r) {
+    const ratio = dist / r;
+    for (const ring of RINGS) if (ratio <= ring.t) return ring.pts;
+    return MISS_PTS;
+}
+// Deterministic RNG — replicates client seededRandom() (Math.sin-based, post-increment seed).
+function makeRng(seed) { let s = seed; return () => { let x = Math.sin(s++) * 10000; return x - Math.floor(x); }; }
+function spawnTarget(rng) {
+    const r = Math.floor(rng() * 10) + 16;
+    const x = rng() * (CANVAS_W - r * 2) + r;
+    const y = rng() * (CANVAS_H - r * 2) + r;
+    return { x, y, r };
+}
+
 function auditPlayerBehavior(stream, seed, claimedScore) {
-    if (!stream || stream.length === 0) return { passed: false, reason: "NO_TELEMETRY_DATA" };
-    let perfectCenterCount = 0;
-    let extremeFastCount = 0;
+    if (!stream || stream.length === 0) return { passed: true, score: 0 }; // never clicked -> 0, not a cheater
+    const rng = makeRng(seed);
+    let target = spawnTarget(rng); // matches client: one spawn before first click
+    let score = 0, hits = 0, bullseye = 0, extremeFastCount = 0;
     for (let i = 0; i < stream.length; i++) {
-        const action = stream[i];
-        if (action.hit && action.offset_r <= 0.5) perfectCenterCount++;
-        if (i > 0 && (action.t - stream[i-1].t) < 80) extremeFastCount++;
+        const a = stream[i];
+        // Replay must land on the same target the client recorded, else the stream is fabricated.
+        if (Math.round(target.x) !== a.target_x || Math.round(target.y) !== a.target_y) {
+            return { passed: false, reason: "STREAM_TARGET_MISMATCH" };
+        }
+        const dist = Math.hypot(a.x - target.x, a.y - target.y);
+        score = Math.max(0, score + ringScore(dist, target.r));
+        const isHit = dist <= target.r;
+        if (isHit) { hits++; if (dist / target.r <= 0.15) bullseye++; target = spawnTarget(rng); }
+        if (i > 0 && (a.t - stream[i - 1].t) < 80) extremeFastCount++;
     }
-    if ((perfectCenterCount / stream.length) > 0.4) return { passed: false, reason: "AIBOT_LOCKON_DETECTED" };
     if (extremeFastCount > 3) return { passed: false, reason: "MACRO_AUTOCLICKER_DETECTED" };
-    return { passed: true };
+    if (hits > 0 && (bullseye / hits) > 0.5) return { passed: false, reason: "AIBOT_LOCKON_DETECTED" };
+    return { passed: true, score };
 }
 
 const PORT = process.env.PORT || 3000;

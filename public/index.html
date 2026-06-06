@@ -195,6 +195,22 @@ function requestPlayerStart() {
 }
 
 function seededRandom() { let x = Math.sin(gameSeed++) * 10000; return x - Math.floor(x); }
+
+// Ring scoring: closer to center = more points. Any hit (ratio<=1) advances the target.
+// MUST stay identical to the server copy in server.js for replay verification.
+const RINGS = [
+    { t: 0.2, pts: 100 },
+    { t: 0.4, pts: 80 },
+    { t: 0.6, pts: 60 },
+    { t: 0.8, pts: 40 },
+    { t: 1.0, pts: 20 },
+];
+const MISS_PTS = -20;
+function ringScore(dist, r) {
+    const ratio = dist / r;
+    for (const ring of RINGS) if (ratio <= ring.t) return ring.pts;
+    return MISS_PTS;
+}
 function spawnSeededTarget() {
     target.r = Math.floor(seededRandom() * 10) + 16;
     target.x = seededRandom() * (canvas.width - target.r * 2) + target.r;
@@ -204,8 +220,15 @@ function spawnSeededTarget() {
 function drawCanvas() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!isPlaying) return;
-    ctx.beginPath(); ctx.arc(target.x, target.y, target.r, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0, 255, 136, 0.12)'; ctx.fill(); ctx.strokeStyle = '#00ff88'; ctx.lineWidth = 2.5; ctx.stroke();
-    ctx.beginPath(); ctx.arc(target.x, target.y, 3.5, 0, Math.PI * 2); ctx.fillStyle = '#00e5ff'; ctx.fill();
+    // concentric rings: outer faint -> inner bright (10-ring bullseye)
+    ctx.fillStyle = 'rgba(0, 255, 136, 0.06)';
+    ctx.beginPath(); ctx.arc(target.x, target.y, target.r, 0, Math.PI * 2); ctx.fill();
+    for (let i = RINGS.length - 1; i >= 0; i--) {
+        ctx.beginPath(); ctx.arc(target.x, target.y, target.r * RINGS[i].t, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(0, 255, 136, ${0.25 + (RINGS.length - i) * 0.13})`;
+        ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(target.x, target.y, 3, 0, Math.PI * 2); ctx.fillStyle = '#00e5ff'; ctx.fill();
 }
 
 function startRun(runDuration) {
@@ -237,13 +260,14 @@ function pointerHit(clientX, clientY) {
     const mouseY = (clientY - rect.top) * scaleY;
     const timestamp = performance.now();
     const dist = Math.hypot(mouseX - target.x, mouseY - target.y);
-    let isHit = false;
-    if (dist <= target.r) { currentScore += 100; isHit = true; spawnSeededTarget(); drawCanvas(); }
-    else { currentScore = Math.max(0, currentScore - 40); }
-    $('score-hud').innerText = String(currentScore).padStart(4, '0');
+    const isHit = dist <= target.r;
+    const pts = ringScore(dist, target.r);
+    currentScore = Math.max(0, currentScore + pts);
     const a = { t: parseFloat(timestamp.toFixed(1)), x: Math.round(mouseX), y: Math.round(mouseY), target_x: Math.round(target.x), target_y: Math.round(target.y), offset_r: parseFloat(dist.toFixed(2)), hit: isHit };
     antiCheatStream.push(a);
-    logAudit(`[STREAM] t:${a.t}ms | Loc:(${a.x},${a.y}) | Offset:${a.offset_r}px | ${isHit ? '🎯HIT' : '❌MISS'}`);
+    if (isHit) { spawnSeededTarget(); drawCanvas(); }
+    $('score-hud').innerText = String(currentScore).padStart(4, '0');
+    logAudit(`[STREAM] t:${a.t}ms | Loc:(${a.x},${a.y}) | Offset:${a.offset_r}px | ${isHit ? `🎯HIT +${pts}` : `❌MISS ${pts}`}`);
 }
 
 canvas.addEventListener('mousedown', (e) => pointerHit(e.clientX, e.clientY));
