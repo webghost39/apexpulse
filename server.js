@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const { computeOutcome, wheelSlices, pickWinner, landAngle } = require('./team-logic');
 
 const app = express();
 const server = http.createServer(app);
@@ -23,6 +24,18 @@ function leaderboardOf(room) {
     return Object.values(room.players);
 }
 
+// Build { A:{count,total}, B:{count,total} } from a room's players (cheaters already 0).
+function teamSummary(room) {
+    const teams = { A: { count: 0, total: 0 }, B: { count: 0, total: 0 } };
+    Object.values(room.players).forEach(p => {
+        if (p.team === 'A' || p.team === 'B') {
+            teams[p.team].count++;
+            teams[p.team].total += (p.isCheater ? 0 : p.score);
+        }
+    });
+    return teams;
+}
+
 // End the whole match for everyone, broadcast final standings.
 function endMatch(roomId) {
     const room = rooms[roomId];
@@ -31,7 +44,14 @@ function endMatch(roomId) {
     if (room.timer) { clearTimeout(room.timer); room.timer = null; }
     // anyone who never started / never finished is locked in at their current score
     Object.values(room.players).forEach(p => { if (p.status !== 'finished') p.status = 'finished'; });
-    io.to(roomId).emit('match_over', leaderboardOf(room));
+    if (room.teamMode) {
+        const teams = teamSummary(room);
+        room.teams = teams;
+        room.outcome = computeOutcome(teams);
+        io.to(roomId).emit('match_over', { players: leaderboardOf(room), teamMode: true, teams, outcome: room.outcome });
+    } else {
+        io.to(roomId).emit('match_over', { players: leaderboardOf(room), teamMode: false });
+    }
 }
 
 // End early only if EVERY player already finished their own run.
@@ -54,7 +74,7 @@ io.on('connection', (socket) => {
         }
         socket.join(roomId);
         if (!rooms[roomId]) {
-            rooms[roomId] = { players: {}, host: socket.id, locked: false, status: 'lobby', seed: 0, startAt: 0, timer: null, createdAt: Date.now() };
+            rooms[roomId] = { players: {}, host: socket.id, locked: false, status: 'lobby', seed: 0, startAt: 0, timer: null, createdAt: Date.now(), teamMode: false, wheelSpun: false, outcome: null };
         }
         const room = rooms[roomId];
         room.players[socket.id] = {
@@ -62,9 +82,32 @@ io.on('connection', (socket) => {
             name: playerName,
             score: 0,
             status: 'waiting',
-            isCheater: false
+            isCheater: false,
+            team: null
         };
         socket.emit('room_state', { hostId: room.host, status: room.status });
+        socket.emit('room_config', { teamMode: room.teamMode });
+        io.to(roomId).emit('room_update', leaderboardOf(room));
+    });
+
+    // Host toggles team mode (lobby only). Clears all team picks.
+    socket.on('set_team_mode', ({ roomId, enabled }) => {
+        const room = rooms[roomId];
+        if (!room || room.host !== socket.id || room.status !== 'lobby') return;
+        room.teamMode = !!enabled;
+        Object.values(room.players).forEach(p => { p.team = null; });
+        io.to(roomId).emit('room_config', { teamMode: room.teamMode });
+        io.to(roomId).emit('room_update', leaderboardOf(room));
+    });
+
+    // Any player picks a team while in team mode (lobby only).
+    socket.on('select_team', ({ roomId, team }) => {
+        const room = rooms[roomId];
+        if (!room || !room.teamMode || room.status !== 'lobby') return;
+        if (team !== 'A' && team !== 'B') return;
+        const player = room.players[socket.id];
+        if (!player) return;
+        player.team = team;
         io.to(roomId).emit('room_update', leaderboardOf(room));
     });
 
@@ -72,8 +115,18 @@ io.on('connection', (socket) => {
     socket.on('lock_start', ({ roomId }) => {
         const room = rooms[roomId];
         if (!room || room.host !== socket.id || room.locked) return;
+        if (room.teamMode) {
+            const counts = { A: 0, B: 0 };
+            Object.values(room.players).forEach(p => { if (p.team === 'A' || p.team === 'B') counts[p.team]++; });
+            if (counts.A < 1 || counts.B < 1) {
+                socket.emit('lock_denied', { reason: 'Each team needs at least 1 player before starting.' });
+                return;
+            }
+        }
         room.locked = true;
         room.status = 'open';
+        room.wheelSpun = false;
+        room.outcome = null;
         room.seed = Math.floor(Math.random() * 1000000); // shared seed => same target sequence
         room.startAt = Date.now();
         room.deadline = room.startAt + MATCH_WINDOW * 1000;
@@ -139,12 +192,42 @@ io.on('connection', (socket) => {
         checkAllFinished(roomId); // whichever comes first: all done -> end now
     });
 
+    // Host spins the tie-break wheel. Server decides the winner authoritatively.
+    socket.on('spin_wheel', ({ roomId }) => {
+        const room = rooms[roomId];
+        if (!room || room.host !== socket.id || room.status !== 'ended') return;
+        if (!room.teamMode || !room.outcome || room.outcome.type !== 'WHEEL_ELIGIBLE') return;
+        if (room.wheelSpun) return;
+        room.wheelSpun = true;
+        const { sliceA, sliceB } = wheelSlices(room.teams.A.total, room.teams.B.total);
+        const winner = pickWinner(sliceA, Math.random);
+        const angle = landAngle(winner, sliceA, Math.random);
+        room.finalWinner = winner;
+        io.to(roomId).emit('wheel_result', { sliceA, sliceB, winner, landAngle: angle });
+    });
+
+    // Host declines the wheel and decides by raw totals (only meaningful when totals differ).
+    socket.on('decide_by_score', ({ roomId }) => {
+        const room = rooms[roomId];
+        if (!room || room.host !== socket.id || room.status !== 'ended') return;
+        if (!room.teamMode || !room.outcome || room.outcome.type !== 'WHEEL_ELIGIBLE') return;
+        if (room.wheelSpun) return;
+        room.wheelSpun = true;
+        const a = room.teams.A.total, b = room.teams.B.total;
+        const winner = a === b ? null : (a > b ? 'A' : 'B');
+        room.finalWinner = winner;
+        io.to(roomId).emit('team_result', { winner });
+    });
+
     // 5. Host resets the room back to lobby for another round.
     socket.on('reset_room', ({ roomId }) => {
         const room = rooms[roomId];
         if (!room || room.host !== socket.id) return;
         room.locked = false;
         room.status = 'lobby';
+        room.wheelSpun = false;
+        room.outcome = null;
+        room.finalWinner = null;
         if (room.timer) { clearTimeout(room.timer); room.timer = null; }
         Object.values(room.players).forEach(p => {
             p.status = 'waiting';
