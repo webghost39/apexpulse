@@ -319,11 +319,13 @@ function pointerHit(clientX, clientY) {
     const isHit = dist <= target.r;
     const pts = ringScore(dist, target.r);
     currentScore = Math.max(0, currentScore + pts);
-    const a = { t: parseFloat(timestamp.toFixed(1)), x: Math.round(mouseX), y: Math.round(mouseY), target_x: Math.round(target.x), target_y: Math.round(target.y), offset_r: parseFloat(dist.toFixed(2)), hit: isHit };
+    // Record FULL-PRECISION click coords. The server replays hit/advance + score from these;
+    // rounding here would desync the target sequence (false STREAM_TARGET_MISMATCH) on boundary hits.
+    const a = { t: parseFloat(timestamp.toFixed(1)), x: mouseX, y: mouseY, target_x: Math.round(target.x), target_y: Math.round(target.y), offset_r: parseFloat(dist.toFixed(2)), hit: isHit };
     antiCheatStream.push(a);
     if (isHit) { spawnSeededTarget(); drawCanvas(); }
     $('score-hud').innerText = String(currentScore).padStart(4, '0');
-    logAudit(`[STREAM] t:${a.t}ms | Loc:(${a.x},${a.y}) | Offset:${a.offset_r}px | ${isHit ? `🎯HIT +${pts}` : `❌MISS ${pts}`}`);
+    logAudit(`[STREAM] t:${a.t}ms | Loc:(${Math.round(mouseX)},${Math.round(mouseY)}) | Offset:${a.offset_r}px | ${isHit ? `🎯HIT +${pts}` : `❌MISS ${pts}`}`);
 }
 
 canvas.addEventListener('mousedown', (e) => pointerHit(e.clientX, e.clientY));
