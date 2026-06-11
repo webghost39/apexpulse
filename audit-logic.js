@@ -23,7 +23,7 @@ function spawnTarget(rng) {
     return { x, y, r };
 }
 
-function auditPlayerBehavior(stream, seed, ac) {
+function auditPlayerBehavior(stream, seed, ac, emojiMode = false) {
     // never clicked -> 0, not a cheater
     if (!stream || stream.length === 0) return { passed: true, score: 0, clickLog: [], summary: { clicks: 0, hits: 0, accuracy: 0, avgOffset: 0 } };
     const rng = makeRng(seed);
@@ -47,7 +47,9 @@ function auditPlayerBehavior(stream, seed, ac) {
         // pixel-perfect = sub-pixel dead-center hit. Humans aiming for center still scatter a few px;
         // only an aimbot snaps to ~0 offset on hit after hit. (Ring scoring rewards center, so a
         // simple "near center" ratio would false-flag good players — require true pixel precision.)
-        if (isHit) { hits++; if (dist <= ac.PERFECT_PX) pixelPerfect++; target = spawnTarget(rng); }
+        if (isHit) { hits++; if (dist <= ac.PERFECT_PX) pixelPerfect++; }
+        // emoji mode: every click advances — misses don't retry
+        if (isHit || emojiMode) target = spawnTarget(rng);
         // inhuman cadence: clicks closer than ac.FAST_MS apart
         if (i > 0 && (a.t - stream[i - 1].t) < ac.FAST_MS) extremeFastCount++;
     }

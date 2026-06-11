@@ -89,7 +89,7 @@ io.on('connection', (socket) => {
         }
         socket.join(roomId);
         if (!rooms[roomId]) {
-            rooms[roomId] = { players: {}, host: socket.id, locked: false, status: 'lobby', seed: 0, startAt: 0, timer: null, createdAt: Date.now(), teamMode: false, wheelSpun: false, outcome: null, teamNames: { A: 'A', B: 'B' }, logs: {} };
+            rooms[roomId] = { players: {}, host: socket.id, locked: false, status: 'lobby', seed: 0, startAt: 0, timer: null, createdAt: Date.now(), teamMode: false, wheelSpun: false, outcome: null, teamNames: { A: 'A', B: 'B' }, logs: {}, emojiMode: false };
         }
         const room = rooms[roomId];
         room.players[socket.id] = {
@@ -101,7 +101,7 @@ io.on('connection', (socket) => {
             team: null
         };
         socket.emit('room_state', { hostId: room.host, status: room.status });
-        socket.emit('room_config', { teamMode: room.teamMode, teamNames: room.teamNames });
+        socket.emit('room_config', { teamMode: room.teamMode, teamNames: room.teamNames, emojiMode: room.emojiMode });
         io.to(roomId).emit('room_update', leaderboardOf(room));
     });
 
@@ -111,7 +111,7 @@ io.on('connection', (socket) => {
         if (!room || room.host !== socket.id || room.status !== 'lobby') return;
         room.teamMode = !!enabled;
         Object.values(room.players).forEach(p => { p.team = null; });
-        io.to(roomId).emit('room_config', { teamMode: room.teamMode, teamNames: room.teamNames });
+        io.to(roomId).emit('room_config', { teamMode: room.teamMode, teamNames: room.teamNames, emojiMode: room.emojiMode });
         io.to(roomId).emit('room_update', leaderboardOf(room));
     });
 
@@ -124,7 +124,15 @@ io.on('connection', (socket) => {
             return s.length ? s : fallback;
         };
         room.teamNames = { A: clean(names && names.A, 'A'), B: clean(names && names.B, 'B') };
-        io.to(roomId).emit('room_config', { teamMode: room.teamMode, teamNames: room.teamNames });
+        io.to(roomId).emit('room_config', { teamMode: room.teamMode, teamNames: room.teamNames, emojiMode: room.emojiMode });
+    });
+
+    // Host toggles emoji mode (lobby only): every click advances; miss shows 🤣 next.
+    socket.on('set_emoji_mode', ({ roomId, enabled }) => {
+        const room = rooms[roomId];
+        if (!room || room.host !== socket.id || room.status !== 'lobby') return;
+        room.emojiMode = !!enabled;
+        io.to(roomId).emit('room_config', { teamMode: room.teamMode, teamNames: room.teamNames, emojiMode: room.emojiMode });
     });
 
     // Any player picks a team while in team mode (lobby only).
@@ -169,7 +177,8 @@ io.on('connection', (socket) => {
             window: MATCH_WINDOW,
             playerDuration: PLAYER_DURATION,
             startAt: room.startAt,
-            deadline: room.deadline
+            deadline: room.deadline,
+            emojiMode: room.emojiMode
         });
         io.to(roomId).emit('room_update', leaderboardOf(room));
         // Hard deadline: end the whole window even if some never start/submit.
@@ -203,7 +212,8 @@ io.on('connection', (socket) => {
         const player = room.players[socket.id];
         if (player.status !== 'playing') return; // must be mid-run; ignore double submit
 
-        const auditResult = auditPlayerBehavior(verifyStream, room.seed, AC);
+        // room's flag (never client-supplied) drives the replay's advance rule
+        const auditResult = auditPlayerBehavior(verifyStream, room.seed, AC, room.emojiMode);
 
         if (auditResult.passed) {
             // server-authoritative: trust the replayed score, not the client's claim

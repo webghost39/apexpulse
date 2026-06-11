@@ -85,6 +85,28 @@ test('empty stream yields empty log and zeroed summary', () => {
     assert.deepStrictEqual(r.summary, { clicks: 0, hits: 0, accuracy: 0, avgOffset: 0 });
 });
 
+test('emoji mode: a miss advances the target, replay verifies and scores', () => {
+    // miss -20 (floor 0), hit on the NEXT target 60, hit 100 => 0, 60, 160
+    const stream = makeStream(7, [{ ratio: 1.5, dt: 300 }, { ratio: 0.5, dt: 300 }, { ratio: 0.1, dt: 300 }], true);
+    const r = auditPlayerBehavior(stream, 7, AC, true);
+    assert.strictEqual(r.passed, true);
+    assert.strictEqual(r.score, 160);
+    assert.deepStrictEqual(r.clickLog.map(c => c.running), [0, 60, 160]);
+});
+
+test('emoji-mode stream fails normal replay (advance rules differ)', () => {
+    const stream = makeStream(7, [{ ratio: 1.5, dt: 300 }, { ratio: 0.5, dt: 300 }], true);
+    const r = auditPlayerBehavior(stream, 7, AC, false);
+    assert.strictEqual(r.passed, false);
+    assert.strictEqual(r.reason, 'STREAM_TARGET_MISMATCH');
+});
+
+test('normal stream still verifies when emoji mode off (regression)', () => {
+    const stream = makeStream(7, [{ ratio: 0.5, dt: 300 }, { ratio: 1.5, dt: 300 }, { ratio: 0.5, dt: 300 }]);
+    const r = auditPlayerBehavior(stream, 7, AC, false);
+    assert.strictEqual(r.passed, true);
+});
+
 test('ringScore boundaries', () => {
     assert.strictEqual(ringScore(0, 20), 100);      // dead center
     assert.strictEqual(ringScore(10, 20), 60);      // ratio 0.5

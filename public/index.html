@@ -88,6 +88,9 @@
                     <h2 id="overlay-title" style="font-size:26px; letter-spacing:1px; font-weight:800;">CONNECTING...</h2>
                     <p id="overlay-desc" style="color:#777; font-size:13px; max-width:90%; line-height:1.6;">Joining room.</p>
                     <div id="team-controls" style="display:none; margin: 14px 0;">
+                        <label id="emoji-mode-row" style="display:none; align-items:center; gap:8px; justify-content:center; margin-bottom:12px; cursor:pointer; color:#cfd3dc; font-size:13px;">
+                            <input type="checkbox" id="emoji-mode-toggle"> 🤣 EMOJI MODE (miss = no retry)
+                        </label>
                         <label id="team-mode-row" style="display:none; align-items:center; gap:8px; justify-content:center; margin-bottom:12px; cursor:pointer; color:#cfd3dc; font-size:13px;">
                             <input type="checkbox" id="team-mode-toggle"> TEAM MODE
                         </label>
@@ -142,6 +145,7 @@ let currentScore = 0, timeLeft = 30, gameSeed = 0;
 let playerDuration = 30, windowEndLocal = 0;
 let isPlaying = false, myStatus = 'waiting';
 let teamMode = false, myTeam = null, teamNames = { A: 'A', B: 'B' };
+let emojiMode = false, targetIsEmoji = false;
 let gameInterval = null, windowInterval = null;
 let target = { x: 0, y: 0, r: 25 };
 let antiCheatStream = [];
@@ -192,7 +196,7 @@ function initConnection() {
         socket.emit('join_room', { roomId, playerName: myName });
     });
     socket.on('room_state', (s) => { hostId = s.hostId; if (myStatus === 'waiting') updateLobbyOverlay(); });
-    socket.on('room_config', (c) => { teamMode = c.teamMode; if (c.teamNames) teamNames = c.teamNames; if (myStatus === 'waiting') updateLobbyOverlay(); });
+    socket.on('room_config', (c) => { teamMode = c.teamMode; if (c.teamNames) teamNames = c.teamNames; emojiMode = !!c.emojiMode; if (myStatus === 'waiting') updateLobbyOverlay(); });
     socket.on('lock_denied', (d) => { alert(d.reason); });
     socket.on('host_changed', (s) => { hostId = s.hostId; if (myStatus === 'waiting') updateLobbyOverlay(); });
     socket.on('room_update', (players) => renderLeaderboard(players));
@@ -204,6 +208,7 @@ function initConnection() {
     socket.on('match_open', (cfg) => {
         gameSeed = cfg.seed;
         playerDuration = cfg.playerDuration;
+        emojiMode = !!cfg.emojiMode;
         windowEndLocal = Date.now() + cfg.window * 1000; // skew-free local deadline
         openWindowReady();
     });
@@ -251,6 +256,8 @@ function renderTeamControls() {
     if (!inLobby) return;
     modeRow.style.display = amHost() ? 'flex' : 'none';
     $('team-mode-toggle').checked = teamMode;
+    $('emoji-mode-row').style.display = amHost() ? 'flex' : 'none';
+    $('emoji-mode-toggle').checked = emojiMode;
     // host edits names; only when team mode on
     nameRow.style.display = (teamMode && amHost()) ? 'flex' : 'none';
     if (teamMode && amHost() && document.activeElement !== $('name-a') && document.activeElement !== $('name-b')) {
@@ -287,7 +294,7 @@ function openWindowReady() {
     ov.style.display = 'flex';
     btn.style.display = 'inline-block';
     btn.onclick = requestPlayerStart;
-    title.innerText = "READY — ROOM IS OPEN";
+    title.innerText = emojiMode ? "READY — EMOJI MODE 🤣" : "READY — ROOM IS OPEN";
     const refresh = () => {
         const left = windowRemaining();
         const run = Math.min(playerDuration, left);
@@ -336,6 +343,14 @@ function spawnSeededTarget() {
 function drawCanvas() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!isPlaying) return;
+    if (targetIsEmoji) {
+        // mockery skin after a miss: same position & hitbox, emoji instead of rings
+        ctx.font = `${Math.round(target.r * 2)}px serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('🤣', target.x, target.y);
+        ctx.beginPath(); ctx.arc(target.x, target.y, 3, 0, Math.PI * 2); ctx.fillStyle = '#00e5ff'; ctx.fill();
+        return;
+    }
     // concentric rings: outer faint -> inner bright (10-ring bullseye)
     ctx.fillStyle = 'rgba(0, 255, 136, 0.06)';
     ctx.beginPath(); ctx.arc(target.x, target.y, target.r, 0, Math.PI * 2); ctx.fill();
@@ -350,7 +365,7 @@ function drawCanvas() {
 function startRun(runDuration) {
     $('overlay').style.display = 'none';
     isPlaying = true; myStatus = 'playing';
-    currentScore = 0; antiCheatStream = []; runClicks = 0; runHits = 0;
+    currentScore = 0; antiCheatStream = []; runClicks = 0; runHits = 0; targetIsEmoji = false;
     timeLeft = runDuration;
     $('score-hud').innerText = "0000";
     $('timer-hud').innerText = timeLeft + "s";
@@ -385,7 +400,7 @@ function pointerHit(clientX, clientY) {
     // rounding here would desync the target sequence (false STREAM_TARGET_MISMATCH) on boundary hits.
     const a = { t: parseFloat(timestamp.toFixed(1)), x: mouseX, y: mouseY, target_x: Math.round(target.x), target_y: Math.round(target.y), offset_r: parseFloat(dist.toFixed(2)), hit: isHit };
     antiCheatStream.push(a);
-    if (isHit) { spawnSeededTarget(); drawCanvas(); }
+    if (isHit || emojiMode) { targetIsEmoji = !isHit; spawnSeededTarget(); drawCanvas(); }
     $('score-hud').innerText = String(currentScore).padStart(4, '0');
     logAudit(`[STREAM] t:${a.t}ms | Loc:(${Math.round(mouseX)},${Math.round(mouseY)}) | Offset:${a.offset_r}px | ${isHit ? `🎯HIT +${pts}` : `❌MISS ${pts}`}`);
 }
@@ -742,6 +757,7 @@ $('spin-btn').addEventListener('click', () => { if (socket && socket.connected) 
 $('decide-btn').addEventListener('click', () => { if (socket && socket.connected) socket.emit('decide_by_score', { roomId }); });
 $('sound-toggle').addEventListener('click', toggleSound);
 renderSoundIcon();
+$('emoji-mode-toggle').addEventListener('change', (e) => { if (socket && socket.connected) socket.emit('set_emoji_mode', { roomId, enabled: e.target.checked }); });
 $('jt-btn').addEventListener('click', startJtRun);
 $('jt-back-btn').addEventListener('click', () => { jtMode = false; myStatus = 'waiting'; updateLobbyOverlay(); });
 $('jt-size').addEventListener('input', () => { $('jt-size-label').innerText = parseFloat($('jt-size').value).toFixed(1) + '×'; });
