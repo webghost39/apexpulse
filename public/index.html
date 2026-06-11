@@ -68,6 +68,7 @@
     <header>
         <div class="logo"><i class="fa-solid fa-bolt"></i>APEX PULSE</div>
         <div id="room-link-box">ROOM: <span id="room-url">LOADING...</span><i id="copy-link" class="fa-solid fa-copy" title="Copy invite link"></i></div>
+        <i id="sound-toggle" class="fa-solid fa-volume-xmark" title="Sound effects (default off)" style="cursor:pointer; color:#888; font-size:18px;"></i>
     </header>
     <main>
         <div class="panel" id="left-sidebar">
@@ -135,6 +136,41 @@ let teamMode = false, myTeam = null, teamNames = { A: 'A', B: 'B' };
 let gameInterval = null, windowInterval = null;
 let target = { x: 0, y: 0, r: 25 };
 let antiCheatStream = [];
+
+// ===== Sound effects: WebAudio-synthesized, LOUD, default OFF =====
+let soundOn = localStorage.getItem('apexpulse_sound') === 'on';
+let audioCtx = null;
+function ensureAudio() {
+    if (!audioCtx) {
+        try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audioCtx = null; }
+    }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+}
+function renderSoundIcon() {
+    $('sound-toggle').className = soundOn ? 'fa-solid fa-volume-high' : 'fa-solid fa-volume-xmark';
+    $('sound-toggle').style.color = soundOn ? 'var(--primary)' : '#888';
+}
+function toggleSound() {
+    soundOn = !soundOn;
+    localStorage.setItem('apexpulse_sound', soundOn ? 'on' : 'off');
+    if (soundOn) ensureAudio(); // user gesture -> safe to create/resume AudioContext
+    renderSoundIcon();
+}
+function playTone(freq, type, dur, gain) {
+    if (!soundOn) return;
+    const ac = ensureAudio();
+    if (!ac) return; // AudioContext unavailable -> stay silent, never crash
+    const osc = ac.createOscillator(), g = ac.createGain();
+    osc.type = type; osc.frequency.value = freq;
+    g.gain.setValueAtTime(gain, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
+    osc.connect(g); g.connect(ac.destination);
+    osc.start(); osc.stop(ac.currentTime + dur);
+}
+// hit: sharp ding, pitch rises with ring points (20pts=620Hz ... 100pts=1100Hz). miss: harsh buzzer.
+function playHitSound(pts) { playTone(500 + pts * 6, 'square', 0.12, 0.9); }
+function playMissSound() { playTone(110, 'sawtooth', 0.3, 0.9); }
 
 function initConnection() {
     myName = prompt("Enter your name:") || "PLAYER_" + Math.floor(Math.random()*900);
@@ -319,6 +355,7 @@ function pointerHit(clientX, clientY) {
     const isHit = dist <= target.r;
     const pts = ringScore(dist, target.r);
     currentScore = Math.max(0, currentScore + pts);
+    if (isHit) playHitSound(pts); else playMissSound();
     // Record FULL-PRECISION click coords. The server replays hit/advance + score from these;
     // rounding here would desync the target sequence (false STREAM_TARGET_MISMATCH) on boundary hits.
     const a = { t: parseFloat(timestamp.toFixed(1)), x: mouseX, y: mouseY, target_x: Math.round(target.x), target_y: Math.round(target.y), offset_r: parseFloat(dist.toFixed(2)), hit: isHit };
@@ -633,6 +670,8 @@ $('pick-a').addEventListener('click', () => pickTeam('A'));
 $('pick-b').addEventListener('click', () => pickTeam('B'));
 $('spin-btn').addEventListener('click', () => { if (socket && socket.connected) socket.emit('spin_wheel', { roomId }); });
 $('decide-btn').addEventListener('click', () => { if (socket && socket.connected) socket.emit('decide_by_score', { roomId }); });
+$('sound-toggle').addEventListener('click', toggleSound);
+renderSoundIcon();
 
 window.onload = initConnection;
 </script>
