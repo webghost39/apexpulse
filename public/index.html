@@ -100,6 +100,13 @@
                             <button class="btn-action" id="pick-b" style="background:#ff5c5c; padding:10px 22px;">TEAM B</button>
                         </div>
                     </div>
+                    <div id="jt-controls" style="display:none;">
+                        <div style="color:#cfd3dc; font-size:13px; margin-bottom:6px;">JT MODE — solo training, not recorded · TARGET SIZE <span id="jt-size-label">1.6×</span></div>
+                        <input type="range" id="jt-size" min="1" max="3" step="0.1" value="1.6" style="width:220px;">
+                        <div style="margin-top:10px;">
+                            <button class="btn-action" id="jt-btn" style="background:linear-gradient(135deg,#b06bff 0%,#7a2bd6 100%); color:#fff; padding:10px 22px;">START JT MODE</button>
+                        </div>
+                    </div>
                     <canvas id="wheelCanvas" width="360" height="360" style="display:none; margin:12px auto;"></canvas>
                     <div id="result-banner" style="display:none; font-size:22px; font-weight:800; margin:10px 0;"></div>
                     <div id="score-log" style="display:none; width:100%; max-width:560px; text-align:left;"></div>
@@ -108,6 +115,7 @@
                         <button class="btn-action" id="decide-btn" style="background:#555;">DECIDE BY SCORE</button>
                     </div>
                     <button class="btn-action" id="action-btn" disabled>PLEASE WAIT</button>
+                    <button class="btn-action" id="jt-back-btn" style="display:none; background:#2a2f3a; color:#ccc; box-shadow:none;">BACK TO LOBBY</button>
                 </div>
                 <canvas id="aimCanvas" width="800" height="500"></canvas>
 <canvas id="confettiCanvas"></canvas>
@@ -137,6 +145,8 @@ let teamMode = false, myTeam = null, teamNames = { A: 'A', B: 'B' };
 let gameInterval = null, windowInterval = null;
 let target = { x: 0, y: 0, r: 25 };
 let antiCheatStream = [];
+let jtMode = false, jtFactor = 1.6;
+let runClicks = 0, runHits = 0;
 
 // ===== Sound effects: WebAudio-synthesized, LOUD, default OFF =====
 let soundOn = localStorage.getItem('apexpulse_sound') === 'on';
@@ -224,6 +234,8 @@ function updateLobbyOverlay() {
         btn.onclick = null;
     }
     renderTeamControls();
+    $('jt-controls').style.display = 'block';
+    $('jt-back-btn').style.display = 'none';
 }
 
 function requestLockStart() { if (socket && socket.connected) socket.emit('lock_start', { roomId }); }
@@ -259,6 +271,16 @@ function stopWindowTimer() { if (windowInterval) { clearInterval(windowInterval)
 
 // After host locks: 60s window is open, each player starts their own 30s run when ready.
 function openWindowReady() {
+    if (jtMode) { // a competitive match preempts any JT run
+        jtMode = false;
+        isPlaying = false;
+        if (gameInterval) { clearInterval(gameInterval); gameInterval = null; }
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        $('finish-btn').style.display = 'none';
+    }
+    $('jt-controls').style.display = 'none';
+    $('jt-back-btn').style.display = 'none';
+    $('score-log').style.display = 'none';
     myStatus = 'ready';
     $('team-controls').style.display = 'none';
     const ov = $('overlay'), title = $('overlay-title'), desc = $('overlay-desc'), btn = $('action-btn');
@@ -305,7 +327,8 @@ function ringScore(dist, r) {
     return MISS_PTS;
 }
 function spawnSeededTarget() {
-    target.r = Math.floor(seededRandom() * 10) + 16;
+    // JT mode scales render AND hitbox; jtMode is always false in competitive runs so replay is untouched
+    target.r = (Math.floor(seededRandom() * 10) + 16) * (jtMode ? jtFactor : 1);
     target.x = seededRandom() * (canvas.width - target.r * 2) + target.r;
     target.y = seededRandom() * (canvas.height - target.r * 2) + target.r;
 }
@@ -327,7 +350,7 @@ function drawCanvas() {
 function startRun(runDuration) {
     $('overlay').style.display = 'none';
     isPlaying = true; myStatus = 'playing';
-    currentScore = 0; antiCheatStream = [];
+    currentScore = 0; antiCheatStream = []; runClicks = 0; runHits = 0;
     timeLeft = runDuration;
     $('score-hud').innerText = "0000";
     $('timer-hud').innerText = timeLeft + "s";
@@ -339,7 +362,7 @@ function startRun(runDuration) {
     gameInterval = setInterval(() => {
         timeLeft--;
         $('timer-hud').innerText = Math.max(0, timeLeft) + "s";
-        if (socket && socket.connected) socket.emit('sync_score', { roomId, currentScore });
+        if (!jtMode && socket && socket.connected) socket.emit('sync_score', { roomId, currentScore });
         if (timeLeft <= 0) finishMyRun();
     }, 1000);
 }
@@ -354,6 +377,7 @@ function pointerHit(clientX, clientY) {
     const timestamp = performance.now();
     const dist = Math.hypot(mouseX - target.x, mouseY - target.y);
     const isHit = dist <= target.r;
+    runClicks++; if (isHit) runHits++;
     const pts = ringScore(dist, target.r);
     currentScore = Math.max(0, currentScore + pts);
     if (isHit) playHitSound(pts); else playMissSound();
@@ -370,17 +394,42 @@ canvas.addEventListener('mousedown', (e) => pointerHit(e.clientX, e.clientY));
 canvas.addEventListener('touchstart', (e) => { e.preventDefault(); const t = e.changedTouches[0]; pointerHit(t.clientX, t.clientY); }, { passive: false });
 
 function finishMyRun() {
-    if (myStatus === 'finished') return;
-    isPlaying = false; myStatus = 'finished';
+    if (myStatus === 'finished' || myStatus === 'jt-done') return;
+    isPlaying = false;
     if (gameInterval) { clearInterval(gameInterval); gameInterval = null; }
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     $('finish-btn').style.display = 'none';
+    if (jtMode) { myStatus = 'jt-done'; showJtResults(); return; }
+    myStatus = 'finished';
     if (socket && socket.connected) socket.emit('submit_score', { roomId, verifyStream: antiCheatStream, finalScore: currentScore });
     $('overlay-title').innerText = "YOU'RE DONE";
     $('overlay-desc').innerText = `Your score: ${currentScore}. Waiting for other players or the timer to end...`;
     $('action-btn').style.display = 'none';
     $('overlay').style.display = 'flex';
     logAudit(`[SUBMIT] Score submitted: ${currentScore}`);
+}
+
+function startJtRun() {
+    jtFactor = parseFloat($('jt-size').value);
+    gameSeed = Math.floor(Math.random() * 1000000); // local seed, never submitted
+    jtMode = true;
+    $('jt-controls').style.display = 'none';
+    $('jt-back-btn').style.display = 'none';
+    $('score-log').style.display = 'none';
+    startRun(playerDuration);
+}
+
+function showJtResults() {
+    const acc = runClicks ? Math.round(runHits / runClicks * 100) : 0;
+    $('overlay-title').innerText = 'JT MODE COMPLETE';
+    $('overlay-desc').innerText = `Score: ${currentScore} · Hits: ${runHits}/${runClicks} · Accuracy: ${acc}% — training only, not recorded.`;
+    const btn = $('action-btn');
+    btn.style.display = 'inline-block';
+    btn.disabled = false;
+    btn.innerText = 'AGAIN';
+    btn.onclick = startJtRun;
+    $('jt-back-btn').style.display = 'inline-block';
+    $('overlay').style.display = 'flex';
 }
 
 function showResults(data) {
@@ -598,7 +647,7 @@ function launchConfetti(color) {
 }
 
 function resetToLobby() {
-    isPlaying = false; myStatus = 'waiting';
+    isPlaying = false; myStatus = 'waiting'; jtMode = false;
     currentScore = 0; timeLeft = playerDuration;
     stopWindowTimer();
     if (gameInterval) { clearInterval(gameInterval); gameInterval = null; }
@@ -693,6 +742,9 @@ $('spin-btn').addEventListener('click', () => { if (socket && socket.connected) 
 $('decide-btn').addEventListener('click', () => { if (socket && socket.connected) socket.emit('decide_by_score', { roomId }); });
 $('sound-toggle').addEventListener('click', toggleSound);
 renderSoundIcon();
+$('jt-btn').addEventListener('click', startJtRun);
+$('jt-back-btn').addEventListener('click', () => { jtMode = false; myStatus = 'waiting'; updateLobbyOverlay(); });
+$('jt-size').addEventListener('input', () => { $('jt-size-label').innerText = parseFloat($('jt-size').value).toFixed(1) + '×'; });
 
 window.onload = initConnection;
 </script>
