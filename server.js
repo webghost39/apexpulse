@@ -2,6 +2,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const fs = require('fs');
+const { addRecord } = require('./records');
 const { computeOutcome, wheelSlices, pickWinner, landAngle } = require('./team-logic');
 const { auditPlayerBehavior } = require('./audit-logic');
 
@@ -26,6 +28,23 @@ const AC = {
     FAST_MS:      Number(process.env.AC_FAST_MS)      || 45,   // clicks closer than this (ms) are "extreme fast"
     FAST_MAX:     Number(process.env.AC_FAST_MAX)     || 8,    // ban if more than this many extreme-fast intervals
 };
+
+// ===== All-time top-8 records (persisted; max 8 entries so sync writes are fine) =====
+const RECORDS_FILE = process.env.RECORDS_FILE || path.join(__dirname, 'records.json');
+let records = [];
+try {
+    records = JSON.parse(fs.readFileSync(RECORDS_FILE, 'utf8'));
+    if (!Array.isArray(records)) records = [];
+} catch (e) {
+    if (e.code !== 'ENOENT') console.log(`[WARN] ${RECORDS_FILE} unreadable (${e.message}), starting with empty records`);
+}
+function saveRecords() {
+    try { fs.writeFileSync(RECORDS_FILE, JSON.stringify(records, null, 2)); }
+    catch (e) { console.log(`[WARN] failed to write ${RECORDS_FILE}: ${e.message}`); }
+}
+
+app.get('/api/leaderboard', (req, res) => res.json(records));
+app.get('/leaderboard', (req, res) => res.sendFile(path.join(__dirname, 'public', 'leaderboard.html')));
 
 // Real-time In-memory Database Room Registry
 const rooms = {};
@@ -220,6 +239,17 @@ io.on('connection', (socket) => {
             player.score = auditResult.score;
             player.summary = auditResult.summary;
             room.logs[socket.id] = auditResult.clickLog;
+            // historical top 8: verified competitive runs only (no emoji-mode, no zero scores;
+            // JT mode never submits, cheaters take the else branch)
+            if (!room.emojiMode && auditResult.score > 0) {
+                records = addRecord(records, {
+                    name: String(player.name).slice(0, 20),
+                    score: auditResult.score,
+                    accuracy: auditResult.summary.accuracy,
+                    date: new Date().toISOString()
+                });
+                saveRecords();
+            }
             if (Math.abs(auditResult.score - finalScore) > 0) {
                 console.log(`[WARN] Score mismatch for ${player.name}: claimed ${finalScore}, server ${auditResult.score}. Using server value.`);
             }

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ApexPulse — Hall of Fame</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root { --bg-color: #0a0b0d; --panel-bg: #13151a; --primary: #00ff88; --accent: #00e5ff; --text: #e3e6ed; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg-color); color: var(--text); font-family: 'Segoe UI', Roboto, sans-serif; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 40px 16px; }
+        h1 { color: gold; font-style: italic; letter-spacing: 2px; margin-bottom: 6px; }
+        .sub { color: #777; font-size: 13px; margin-bottom: 26px; }
+        .board { background: var(--panel-bg); border: 1px solid #222631; border-radius: 8px; padding: 20px; width: 100%; max-width: 560px; }
+        .row { display: flex; align-items: center; gap: 12px; padding: 12px; background: #1a1d26; border-radius: 4px; margin-bottom: 8px; border-left: 3px solid #3a4155; }
+        .row:nth-child(1) { border-left-color: gold; }
+        .row:nth-child(2) { border-left-color: silver; }
+        .row:nth-child(3) { border-left-color: #cd7f32; }
+        .rank { width: 28px; font-weight: 800; color: #888; }
+        .name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .acc { color: #888; font-size: 12px; width: 70px; text-align: right; }
+        .date { color: #555; font-size: 12px; width: 90px; text-align: right; }
+        .score { font-family: monospace; font-weight: 700; color: var(--primary); width: 70px; text-align: right; }
+        .empty { color: #555; text-align: center; padding: 30px 0; }
+        a.back { color: var(--accent); text-decoration: none; margin-top: 22px; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <h1><i class="fa-solid fa-trophy"></i> HALL OF FAME</h1>
+    <div class="sub">All-time top 8 · server-verified competitive runs only</div>
+    <div class="board" id="board"><div class="empty">Loading...</div></div>
+    <a class="back" href="/"><i class="fa-solid fa-arrow-left"></i> BACK TO GAME</a>
+    <script>
+        fetch('/api/leaderboard').then(r => r.json()).then(records => {
+            const board = document.getElementById('board');
+            board.innerHTML = '';
+            if (!records.length) {
+                board.innerHTML = '<div class="empty">No records yet. Go set one!</div>';
+                return;
+            }
+            records.forEach((rec, i) => {
+                const row = document.createElement('div');
+                row.className = 'row';
+                const mk = (cls, text) => { const d = document.createElement('div'); d.className = cls; d.textContent = text; return d; };
+                row.appendChild(mk('rank', '#' + (i + 1)));
+                row.appendChild(mk('name', rec.name)); // textContent: names are user input
+                row.appendChild(mk('acc', rec.accuracy + '% acc'));
+                row.appendChild(mk('date', new Date(rec.date).toLocaleDateString()));
+                row.appendChild(mk('score', rec.score));
+                board.appendChild(row);
+            });
+        }).catch(() => {
+            document.getElementById('board').innerHTML = '<div class="empty">Failed to load records.</div>';
+        });
+    </script>
+</body>
+</html>
