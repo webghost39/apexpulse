@@ -54,14 +54,19 @@ function endMatch(roomId) {
     if (room.timer) { clearTimeout(room.timer); room.timer = null; }
     // anyone who never started / never finished is locked in at their current score
     Object.values(room.players).forEach(p => { if (p.status !== 'finished') p.status = 'finished'; });
+    let base;
     if (room.teamMode) {
         const teams = teamSummary(room);
         room.teams = teams;
         room.outcome = computeOutcome(teams);
-        io.to(roomId).emit('match_over', { players: leaderboardOf(room), teamMode: true, teams, outcome: room.outcome });
+        base = { players: leaderboardOf(room), teamMode: true, teams, outcome: room.outcome };
     } else {
-        io.to(roomId).emit('match_over', { players: leaderboardOf(room), teamMode: false });
+        base = { players: leaderboardOf(room), teamMode: false };
     }
+    // per-socket: everyone gets all summaries (via players), plus their OWN full click log
+    Object.values(room.players).forEach(p => {
+        io.to(p.id).emit('match_over', { ...base, myLog: room.logs[p.id] || null });
+    });
 }
 
 // End early only if EVERY player already finished their own run.
@@ -84,7 +89,7 @@ io.on('connection', (socket) => {
         }
         socket.join(roomId);
         if (!rooms[roomId]) {
-            rooms[roomId] = { players: {}, host: socket.id, locked: false, status: 'lobby', seed: 0, startAt: 0, timer: null, createdAt: Date.now(), teamMode: false, wheelSpun: false, outcome: null, teamNames: { A: 'A', B: 'B' } };
+            rooms[roomId] = { players: {}, host: socket.id, locked: false, status: 'lobby', seed: 0, startAt: 0, timer: null, createdAt: Date.now(), teamMode: false, wheelSpun: false, outcome: null, teamNames: { A: 'A', B: 'B' }, logs: {} };
         }
         const room = rooms[roomId];
         room.players[socket.id] = {
@@ -156,7 +161,9 @@ io.on('connection', (socket) => {
             p.status = 'ready';   // can start their own run any time within the window
             p.score = 0;
             p.isCheater = false;
+            p.summary = null;
         });
+        room.logs = {};
         io.to(roomId).emit('match_open', {
             seed: room.seed,
             window: MATCH_WINDOW,
@@ -201,6 +208,8 @@ io.on('connection', (socket) => {
         if (auditResult.passed) {
             // server-authoritative: trust the replayed score, not the client's claim
             player.score = auditResult.score;
+            player.summary = auditResult.summary;
+            room.logs[socket.id] = auditResult.clickLog;
             if (Math.abs(auditResult.score - finalScore) > 0) {
                 console.log(`[WARN] Score mismatch for ${player.name}: claimed ${finalScore}, server ${auditResult.score}. Using server value.`);
             }
@@ -251,10 +260,12 @@ io.on('connection', (socket) => {
         room.outcome = null;
         room.finalWinner = null;
         if (room.timer) { clearTimeout(room.timer); room.timer = null; }
+        room.logs = {};
         Object.values(room.players).forEach(p => {
             p.status = 'waiting';
             p.score = 0;
             p.isCheater = false;
+            p.summary = null;
         });
         io.to(roomId).emit('room_reset');
         io.to(roomId).emit('room_update', leaderboardOf(room));

@@ -63,6 +63,28 @@ test('aimbot (pixel-perfect hit after hit) is banned', () => {
     assert.strictEqual(r.reason, 'AIBOT_LOCKON_DETECTED');
 });
 
+test('passed audit includes per-click log and summary', () => {
+    // hit 60pts, hit 60pts, miss -20 => running 60, 120, 100
+    const stream = makeStream(7, [{ ratio: 0.5, dt: 300 }, { ratio: 0.5, dt: 400 }, { ratio: 1.5, dt: 300 }]);
+    const r = auditPlayerBehavior(stream, 7, AC);
+    assert.strictEqual(r.passed, true);
+    assert.strictEqual(r.clickLog.length, 3);
+    assert.deepStrictEqual(r.clickLog.map(c => c.running), [60, 120, 100]);
+    assert.deepStrictEqual(r.clickLog.map(c => c.pts), [60, 60, -20]);
+    assert.deepStrictEqual(r.clickLog.map(c => c.hit), [true, true, false]);
+    assert.deepStrictEqual(r.clickLog.map(c => c.t), [0, 400, 700]); // ms since first click
+    assert.strictEqual(r.summary.clicks, 3);
+    assert.strictEqual(r.summary.hits, 2);
+    assert.strictEqual(r.summary.accuracy, 67); // round(2/3*100)
+    assert.ok(r.summary.avgOffset > 0);
+});
+
+test('empty stream yields empty log and zeroed summary', () => {
+    const r = auditPlayerBehavior([], 42, AC);
+    assert.deepStrictEqual(r.clickLog, []);
+    assert.deepStrictEqual(r.summary, { clicks: 0, hits: 0, accuracy: 0, avgOffset: 0 });
+});
+
 test('ringScore boundaries', () => {
     assert.strictEqual(ringScore(0, 20), 100);      // dead center
     assert.strictEqual(ringScore(10, 20), 60);      // ratio 0.5

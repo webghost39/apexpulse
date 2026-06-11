@@ -24,10 +24,14 @@ function spawnTarget(rng) {
 }
 
 function auditPlayerBehavior(stream, seed, ac) {
-    if (!stream || stream.length === 0) return { passed: true, score: 0 }; // never clicked -> 0, not a cheater
+    // never clicked -> 0, not a cheater
+    if (!stream || stream.length === 0) return { passed: true, score: 0, clickLog: [], summary: { clicks: 0, hits: 0, accuracy: 0, avgOffset: 0 } };
     const rng = makeRng(seed);
     let target = spawnTarget(rng); // matches client: one spawn before first click
     let score = 0, hits = 0, pixelPerfect = 0, extremeFastCount = 0;
+    const clickLog = [];
+    let offsetSum = 0;
+    const t0 = stream[0].t;
     for (let i = 0; i < stream.length; i++) {
         const a = stream[i];
         // Replay must land on the same target the client recorded, else the stream is fabricated.
@@ -35,8 +39,11 @@ function auditPlayerBehavior(stream, seed, ac) {
             return { passed: false, reason: "STREAM_TARGET_MISMATCH", at: i, sawTarget: [a.target_x, a.target_y], expectTarget: [Math.round(target.x), Math.round(target.y)] };
         }
         const dist = Math.hypot(a.x - target.x, a.y - target.y);
-        score = Math.max(0, score + ringScore(dist, target.r));
+        const pts = ringScore(dist, target.r);
+        score = Math.max(0, score + pts);
         const isHit = dist <= target.r;
+        offsetSum += dist;
+        clickLog.push({ t: Math.round(a.t - t0), offset: +dist.toFixed(1), pts, hit: isHit, running: score });
         // pixel-perfect = sub-pixel dead-center hit. Humans aiming for center still scatter a few px;
         // only an aimbot snaps to ~0 offset on hit after hit. (Ring scoring rewards center, so a
         // simple "near center" ratio would false-flag good players — require true pixel precision.)
@@ -48,7 +55,8 @@ function auditPlayerBehavior(stream, seed, ac) {
     if (extremeFastCount > ac.FAST_MAX) return { passed: false, reason: "MACRO_AUTOCLICKER_DETECTED", stats };
     // aimbot: needs a meaningful sample AND overwhelmingly pixel-perfect hits
     if (hits >= ac.AIMBOT_MIN_HITS && (pixelPerfect / hits) > ac.AIMBOT_RATIO) return { passed: false, reason: "AIBOT_LOCKON_DETECTED", stats };
-    return { passed: true, score, stats };
+    const summary = { clicks: stream.length, hits, accuracy: Math.round(hits / stream.length * 100), avgOffset: +(offsetSum / stream.length).toFixed(1) };
+    return { passed: true, score, stats, clickLog, summary };
 }
 
 module.exports = { CANVAS_W, CANVAS_H, RINGS, MISS_PTS, ringScore, makeRng, spawnTarget, auditPlayerBehavior };
