@@ -429,6 +429,7 @@ function startJtRun() {
     jtFactor = parseFloat($('jt-size').value);
     gameSeed = Math.floor(Math.random() * 1000000); // local seed, never submitted
     jtMode = true;
+    $('team-controls').style.display = 'none'; // room-mode toggles are irrelevant in solo JT
     $('jt-controls').style.display = 'none';
     $('jt-back-btn').style.display = 'none';
     $('score-log').style.display = 'none';
