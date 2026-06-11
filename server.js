@@ -246,6 +246,8 @@ io.on('connection', (socket) => {
                     name: String(player.name).slice(0, 20),
                     score: auditResult.score,
                     accuracy: auditResult.summary.accuracy,
+                    hits: auditResult.summary.hits,
+                    clicks: auditResult.summary.clicks,
                     date: new Date().toISOString()
                 });
                 saveRecords();
